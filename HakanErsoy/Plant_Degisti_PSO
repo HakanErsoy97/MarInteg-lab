@@ -1,0 +1,91 @@
+% T200 Motorunun PID Hız Kontrolü için PSO Optimizasyonu
+clc;
+clear;
+close all;
+
+%% Verilen Motor Transfer Fonksiyonu
+motor_tf = tf([-107, 8.358e4, 3.989e4], [1, 152.9, 3.036e4, 2.93e6, 1.157e6]);
+
+%% Sistem Parametreleri
+m = 10; % kg, robotun ağırlığı
+
+%% Yeni Plant Oluştur (Motor + Kütle Dinamiği)
+plant_tf = series(motor_tf, tf(1,[m, 0])); % Kuvvet-hız dönüşümü dahil edildi
+
+%% PSO Parametreleri
+num_particles = 30;
+max_iter = 50;
+w = 0.7; % Atalet katsayısı
+c1 = 1.5; % Kişisel ivme katsayısı
+c2 = 2.0; % Sürü ivme katsayısı
+
+%% PID Parametre Sınırları (Kp, Ki, Kd)
+bounds = [0 1000; 0 500; 0 100];
+
+%% Başlangıç pozisyon ve hız
+dim = 3; % [Kp, Ki, Kd]
+X = rand(num_particles, dim).*(bounds(:,2)' - bounds(:,1)') + bounds(:,1)';
+V = zeros(num_particles, dim);
+
+%% Optimizasyon Döngüsü
+personal_best = X;
+personal_best_cost = inf(num_particles,1);
+
+global_best = zeros(1,dim);
+global_best_cost = inf;
+
+for iter=1:max_iter
+    for i=1:num_particles
+        % PID Kontrolcü
+        C = pid(X(i,1), X(i,2), X(i,3));
+
+        % Kapalı döngü transfer fonksiyonu
+        sys_cl = feedback(series(C,plant_tf),1);
+
+        % Step cevabının performansını hesapla
+        t = 0:0.01:5;
+        [y,~] = step(sys_cl,t);
+        
+        % Maliyet Fonksiyonu (ITAE - Integral of Time-weighted Absolute Error)
+        e = 1 - y; % Birim step hedef alındı
+        cost = sum(t'.*abs(e)*0.01);
+
+        % Kişisel en iyiyi güncelle
+        if cost < personal_best_cost(i)
+            personal_best(i,:) = X(i,:);
+            personal_best_cost(i) = cost;
+        end
+
+        % Global en iyiyi güncelle
+        if cost < global_best_cost
+            global_best = X(i,:);
+            global_best_cost = cost;
+        end
+    end
+
+    % Hız ve konumu güncelle
+    V = w*V + c1*rand(num_particles,dim).*(personal_best - X) + ...
+        c2*rand(num_particles,dim).*(global_best - X);
+
+    X = X + V;
+
+    % Sınır kontrolü
+    X = min(max(X,bounds(:,1)'),bounds(:,2)');
+
+    fprintf('İterasyon %d/%d, En iyi maliyet: %.4f\n', iter, max_iter, global_best_cost);
+end
+
+%% Sonuçlar
+fprintf('\nOptimal PID Parametreleri:\n');
+fprintf('Kp = %.4f\nKi = %.4f\nKd = %.4f\n', global_best(1), global_best(2), global_best(3));
+
+%% Optimum PID ile Kapalı Döngü Sistemi Simüle Et
+opt_PID = pid(global_best(1), global_best(2), global_best(3));
+opt_sys = feedback(series(opt_PID, plant_tf),1);
+
+figure;
+step(opt_sys,0:0.01:5);
+title('Optimum PID ile Kapalı Döngü Step Yanıtı');
+xlabel('Zaman (s)');
+ylabel('Hız (m/s)');
+grid on;
