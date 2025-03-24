@@ -1,0 +1,123 @@
+clc; clear all; close all;
+
+% Transfer Fonksiyonu
+num = [-107  8.358e04  3.989e04];
+den = [1 152.9  3.036e04  2.93e06  1.157e06];
+G = tf(num, den);
+
+% Optimizasyon Parametreleri
+nVars = 5; % Kp, Ki, Kd, Lambda, Nu
+lb = [0, 0, 0, 0.1, 0.1];
+ub = [500, 500, 500, 1, 1];
+popSize = 50;
+maxIter = 20;
+
+% WOA ile Optimizasyon
+[optWOA, costWOA] = WhaleOptimizationAlgorithm(@(params) costFunction(params, G), nVars, lb, ub, popSize, maxIter);
+% Sonuçları Yazdır
+fprintf('\nWOA Optimal Değerler:\n');
+printResults(optWOA, costWOA, G);
+
+function J = costFunction(params, G)
+    Kp = params(1);
+    Ki = params(2);
+    Kd = params(3);
+    Lambda = params(4);
+    Nu = params(5);
+
+    s = fotf('s');
+    C = Kp + Ki*(1/(s^Lambda)) + Kd*(s^Nu);
+    C = oustapp(C, 0.1 , 1000, 5,'oust');
+    
+    T = feedback(C*G,1);
+
+    t = 0:0.01:10;
+    [y, t] = step(T, t);
+    e = 1 - y;
+
+    % ITAE ve Stepinfo ile Overshoot, Settling Time eklenmiş literatür tabanlı maliyet fonksiyonu
+    ITAE = sum(t .* abs(e));
+    S = stepinfo(T, 'SettlingTimeThreshold', 0.02);
+
+    lambda1 = 50; % Overshoot için ağırlık
+    lambda2 = 20; % Settling Time için ağırlık
+
+    overshoot = S.Overshoot;
+    settlingTime = S.SettlingTime;
+
+    J = ITAE + lambda1 * overshoot + lambda2 * settlingTime;
+
+    penalty = 0.01*(max(0,Kp-80)^2 + max(0,Ki-80)^2 + max(0,Kd-80)^2);
+    J = J + penalty;
+
+    fprintf('Kp: %.4f, Ki: %.4f, Kd: %.4f, Lambda: %.4f, Nu: %.4f, Cost: %.4f\n', Kp, Ki, Kd, Lambda, Nu, J);
+end
+
+function printResults(optParams, optCost, G)
+    fprintf('Kp: %.4f, Ki: %.4f, Kd: %.4f, Lambda: %.4f, Nu: %.4f, Cost: %.4f\n', ...
+            optParams(1), optParams(2), optParams(3), optParams(4), optParams(5), optCost);
+
+    s = fotf('s');
+    C = optParams(1) + optParams(2)(1/(s^optParams(4))) + optParams(3)(s^optParams(5));
+    T = feedback(C*G, 1);
+
+    t = 0:0.01:10;
+    [y, t] = step(T, t);
+    figure;
+    plot(t, y); grid on;
+    title_str = sprintf('WOA Optimal Değerler Kp: %.4f, Ki: %.4f, Kd: %.4f, Lambda: %.4f, Nu: %.4f, Son Deger: %.4f', ...
+                        optParams(1), optParams(2), optParams(3), optParams(4), optParams(5), y(end));
+    title(title_str);
+end
+
+
+function [Leader_pos, Leader_score] = WhaleOptimizationAlgorithm(costFunction, nVars, lb, ub, popSize, maxIter)
+    Leader_pos = zeros(1, nVars);
+    Leader_score = inf;
+    Positions = lb + (ub - lb) .* rand(popSize, nVars);
+    iter = 0;
+
+    while iter < maxIter
+        for i = 1:popSize
+            Positions(i,:) = max(min(Positions(i,:), ub), lb);
+            fitness = costFunction(Positions(i,:));
+            if fitness < Leader_score
+                Leader_score = fitness;
+                Leader_pos = Positions(i,:);
+            end
+        end
+
+        a = 2 - iter * (2 / maxIter);
+        a2 = -1 + iter * (-1 / maxIter);
+
+        for i = 1:popSize
+            r1 = rand();
+            r2 = rand();
+            A = 2 * a * r1 - a;
+            C = 2 * r2;
+            b = 1;
+            l = (a2 - 1) * rand + 1;
+            p = rand();
+
+            for j = 1:nVars
+                if p < 0.5
+                    if abs(A) >= 1
+                        rand_leader_index = randi([1 popSize]);
+                        X_rand = Positions(rand_leader_index,:);
+                        D_X_rand = abs(C * X_rand(j) - Positions(i,j));
+                        Positions(i,j) = X_rand(j) - A * D_X_rand;
+                    else
+                        D_Leader = abs(C * Leader_pos(j) - Positions(i,j));
+                        Positions(i,j) = Leader_pos(j) - A * D_Leader;
+                    end
+                else
+                    distance2Leader = abs(Leader_pos(j) - Positions(i,j));
+                    Positions(i,j) = distance2Leader * exp(b*l) * cos(l*2*pi) + Leader_pos(j);
+                end
+            end
+        end
+
+        fprintf('Iterasyon %d: En iyi skor = %.4f\n', iter+1, Leader_score);
+        iter = iter + 1;
+    end
+end
